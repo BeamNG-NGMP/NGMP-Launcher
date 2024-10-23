@@ -1,0 +1,3 @@
+[Networking]
+launcher_port = 42637
+http_port = 4434

@@ -1,0 +1,17 @@
+[package]
+name = "ngmp_launcher"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+log = { version = "0.4", features = ["std"] }
+tokio = { version = "1.40", features = ["macros","sync","rt-multi-thread","rt","net"] }
+ngmp_protocol_impl = { path = "../SL-Protocol-impl" }
+
+anyhow = "1.0"
+thiserror = "1.0"
+
+serde = { version = "1.0", features = ["derive"] }
+toml = { version = "0.8", features = ["preserve_order"] }
+warp = "0.3.7"
+reqwest = "0.12.8"
