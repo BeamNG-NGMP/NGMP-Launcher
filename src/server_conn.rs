@@ -17,6 +17,8 @@ use crate::signal::SignalReceiver;
 pub enum ConnectionError {
     #[error("invalid packet sent: {0:?}")]
     InvalidPacket(ServerPacket),
+    #[error("invalid client packet sent: {0:?}")]
+    InvalidClientPacket(ClientPacket),
 }
 
 /// Handles the "connecting to server" part of the logic
@@ -33,7 +35,7 @@ pub async fn launcher_on_server_main(
     let mut server_tcp_conn = TcpConnection::from_stream(tokio::net::TcpStream::connect(server_addr).await?);
 
     // Version packet
-    server_tcp_conn.write_packet(ServerPacket::Version(server_launcher::handshake::VersionPacket {
+    server_tcp_conn.write_packet(&ServerPacket::Version(server_launcher::handshake::VersionPacket {
         confirm_id: 1,
         client_version: 1,
     })).await?;
@@ -49,7 +51,7 @@ pub async fn launcher_on_server_main(
     }
 
     // Authentication packet
-    server_tcp_conn.write_packet(ServerPacket::Authentication(server_launcher::handshake::AuthenticationPacket {
+    server_tcp_conn.write_packet(&ServerPacket::Authentication(server_launcher::handshake::AuthenticationPacket {
         confirm_id: 2,
         auth_code: "not a real auth code lol".to_string(),
     })).await?;
@@ -92,14 +94,27 @@ pub async fn launcher_on_server_main(
         },
     };
     debug!("map_name: {}", map_info.map_name);
+    launcher_socket.write_packet(local_addr, ClientPacket::LoadMap(launcher_client::generic::LoadMapPacket {
+        confirm_id: 1, // TODO: Generate confirm ID
+        map_name: map_info.map_name,
+    })).await?;
+
+    // Wait for confirmation (so we know the map is loaded)
+    let (packet, _) = launcher_socket.wait_for_packet().await?;
+    match packet {
+        ClientPacket::Confirmation(p) => {}, // TODO: Check confirm id of previous packet,
+        _ => {
+            error!("Unknown packet: {:?}", packet);
+            return Err(ConnectionError::InvalidClientPacket(packet).into());
+        },
+    }
 
     // Confirmation
-    // TODO: We need to wait until we are done loading into the map before confirming this.
-    server_tcp_conn.write_packet(ServerPacket::Confirmation(server_launcher::generic::ConfirmationPacket {
+    server_tcp_conn.write_packet(&ServerPacket::Confirmation(server_launcher::generic::ConfirmationPacket {
         confirm_id: map_info.confirm_id,
     })).await?;
 
-    launcher_on_server_inner(launcher_socket, server_tcp_conn, server_udp_conn).await;
+    launcher_on_server_inner(launcher_socket, local_addr, server_tcp_conn, server_udp_conn).await;
 
     info!("Done playing on the server :)");
 
@@ -108,10 +123,28 @@ pub async fn launcher_on_server_main(
 
 async fn launcher_on_server_inner(
     launcher_socket: &mut UdpListener<ClientPacket>,
+    local_addr: SocketAddr,
     mut server_tcp_conn: TcpConnection<ServerPacket>,
     mut server_udp_conn: UdpClient<ServerPacket>,
 ) {
-    loop {
-        // TODO: Do things
+    {
+        tokio::select!(
+            client_packet_maybe = launcher_socket.wait_for_packet() => {
+                debug!("client packet: {:?}", client_packet_maybe);
+            },
+            tcp_server_packet_maybe = server_tcp_conn.wait_for_packet() => {
+                debug!("server tcp packet: {:?}", tcp_server_packet_maybe);
+            },
+            udp_server_packet_maybe = server_udp_conn.wait_for_packet() => {
+                debug!("server udp packet: {:?}", udp_server_packet_maybe);
+            }
+        );
+
+        if let Err(e) = server_tcp_conn.write_packet(&ServerPacket::Confirmation(server_launcher::generic::ConfirmationPacket {
+            confirm_id: 5,
+        })).await {
+            error!("{}", e);
+        }
+        // debug!("server tcp packet: {:?}", server_tcp_conn.wait_for_packet().await);
     }
 }
