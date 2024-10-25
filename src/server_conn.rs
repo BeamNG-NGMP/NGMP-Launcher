@@ -127,24 +127,81 @@ async fn launcher_on_server_inner(
     mut server_tcp_conn: TcpConnection<ServerPacket>,
     mut server_udp_conn: UdpClient<ServerPacket>,
 ) {
-    {
+    loop {
+        let mut client_packet = None;
+        let mut server_packet = None;
         tokio::select!(
             client_packet_maybe = launcher_socket.wait_for_packet() => {
-                debug!("client packet: {:?}", client_packet_maybe);
+                trace!("client packet: {:?}", client_packet_maybe);
+                if let Err(e) = client_packet_maybe {
+                    error!("{}", e);
+                    break; // We have run into an error, simply disconnect for now
+                }
+                let (packet, _) = client_packet_maybe.unwrap();
+                client_packet = Some(packet);
             },
             tcp_server_packet_maybe = server_tcp_conn.wait_for_packet() => {
-                debug!("server tcp packet: {:?}", tcp_server_packet_maybe);
+                trace!("server tcp packet: {:?}", tcp_server_packet_maybe);
+                if let Err(e) = tcp_server_packet_maybe {
+                    error!("{}", e);
+                    break; // We have run into an error, simply disconnect for now
+                }
+                let packet = tcp_server_packet_maybe.unwrap();
+                server_packet = Some(packet);
             },
             udp_server_packet_maybe = server_udp_conn.wait_for_packet() => {
-                debug!("server udp packet: {:?}", udp_server_packet_maybe);
+                trace!("server udp packet: {:?}", udp_server_packet_maybe);
+                if let Err(e) = udp_server_packet_maybe {
+                    error!("{}", e);
+                    break; // We have run into an error, simply disconnect for now
+                }
+                let packet = udp_server_packet_maybe.unwrap();
+                server_packet = Some(packet);
             }
         );
 
-        if let Err(e) = server_tcp_conn.write_packet(&ServerPacket::Confirmation(server_launcher::generic::ConfirmationPacket {
-            confirm_id: 5,
-        })).await {
-            error!("{}", e);
+        if let Some(packet) = client_packet {
+            if let Err(e) = match packet {
+                ClientPacket::VehicleSpawn(p) => server_tcp_conn.write_packet(&ServerPacket::VehicleSpawn(server_launcher::gameplay::VehicleSpawnPacket {
+                    confirm_id: p.confirm_id,
+                    raw_json: p.raw_json,
+                })).await,
+                ClientPacket::VehicleDelete(p) => server_tcp_conn.write_packet(&ServerPacket::VehicleDelete(server_launcher::gameplay::VehicleDeletePacket {
+                    player_id: p.player_id,
+                    vehicle_id: p.vehicle_id,
+                })).await,
+                _ => {
+                    warn!("Unsupported packet: {:?}", packet);
+                    Ok(())
+                },
+            } {
+                error!("{}", e);
+                break; // We have run into an error, simply disconnect for now
+            }
         }
-        // debug!("server tcp packet: {:?}", server_tcp_conn.wait_for_packet().await);
+
+        if let Some(packet) = server_packet {
+            if let Err(e) = match packet {
+                ServerPacket::VehicleSpawn(p) => launcher_socket.write_packet(local_addr, ClientPacket::VehicleSpawn(launcher_client::gameplay::VehicleSpawnPacket {
+                    confirm_id: p.confirm_id,
+                    raw_json: p.raw_json,
+                })).await,
+                ServerPacket::VehicleConfirm(p) => launcher_socket.write_packet(local_addr, ClientPacket::VehicleConfirm(launcher_client::gameplay::VehicleConfirmPacket {
+                    confirm_id: p.confirm_id,
+                    vehicle_id: p.vehicle_id,
+                })).await,
+                ServerPacket::VehicleDelete(p) => launcher_socket.write_packet(local_addr, ClientPacket::VehicleDelete(launcher_client::gameplay::VehicleDeletePacket {
+                    player_id: p.player_id,
+                    vehicle_id: p.vehicle_id,
+                })).await,
+                _ => {
+                    warn!("Unsupported packet: {:?}", packet);
+                    Ok(())
+                },
+            } {
+                error!("{}", e);
+                break; // We have run into an error, simply disconnect for now
+            }
+        }
     }
 }
