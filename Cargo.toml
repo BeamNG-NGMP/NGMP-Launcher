@@ -14,4 +14,7 @@ thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 toml = { version = "0.8", features = ["preserve_order"] }
 warp = "0.3.7"
-reqwest = "0.12.8"
+reqwest = { version = "0.12.5", features = ["json"] } # We must use this version because of steam-auth (for now)
+steam-auth = { git = "https://github.com/BeamNG-NGMP/steam-auth.git" }
+# steam-auth = { path = "../steam-auth" }
+open = "5.3.0"
