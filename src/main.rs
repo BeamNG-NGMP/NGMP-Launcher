@@ -27,9 +27,6 @@ async fn main() {
 
     let config = config::load_config();
 
-    // Load the stored auth code (if possible)
-    let access_token = std::fs::read_to_string("key").ok();
-
     // Set up a messaging channel for HTTP->Launcher messages
     let (http_msg_tx, mut http_msg_rx) = mpsc::channel(25);
 
@@ -52,7 +49,6 @@ async fn main() {
                     local_addr,
                     client_info,
                     kill_receiver.clone(),
-                    access_token.clone(),
                     &mut http_msg_rx
                 ).await,
                 _ => error!("Unknown packet sent! Packet: {:?}", packet),
@@ -67,7 +63,6 @@ async fn launcher_main(
     local_addr: SocketAddr,
     client_info: launcher_client::handshake::ClientInfoPacket,
     signal_rx: SignalReceiver,
-    access_token: Option<String>,
     http_msg_rx: &mut mpsc::Receiver<http::Message>,
 ) {
     info!("Game connected!");
@@ -77,11 +72,22 @@ async fn launcher_main(
         protocol_version: 1,
     })).await;
 
+    // Load the stored auth code (if possible)
+    let auth_token = std::fs::read_to_string("auth_token").ok();
+
     // Load potential auth data
-    let user_info = if let Some(auth_token) = access_token {
-        // TODO: Implement requesting steam id and name
-        todo!()
-    } else {
+    let mut user_info = if let Some(auth_token) = auth_token {
+        trace!("Player has an auth token ready!");
+
+        match http::request_user_data(auth_token).await {
+            Ok(user_info) => Some(user_info),
+            Err(e) => {
+                error!("{}", e);
+                None
+            }
+        }
+    } else { None };
+    if user_info.is_none() { user_info = {
         trace!("Player is not currently logged in!");
 
         // AuthenticationInfo packet
@@ -121,7 +127,7 @@ async fn launcher_main(
             },
             Some(msg) => {
                 match msg {
-                    http::Message::AuthData(v) => v,
+                    http::Message::AuthData(v) => Some(v),
                     http::Message::AuthFailure => {
                         // TODO: We should simply retry the authentication if this fails
                         error!("Failed to authenticate, currently unrecoverable.");
@@ -134,11 +140,15 @@ async fn launcher_main(
                 }
             },
         }
-    };
+    };}
+    // Now we can unwrap because we have data in here now or have returned to the main menu
+    let user_info = user_info.unwrap();
     trace!("Logged in: {:#?}", user_info);
 
     // Now we can cache the auth token to disk
-    // TODO: Do that
+    if let Err(e) = std::fs::write("auth_token", user_info.auth) {
+        error!("{}", e);
+    }
 
     // AuthenticationInfo packet
     launcher_socket.write_packet(local_addr, ClientPacket::AuthenticationInfo(launcher_client::handshake::AuthenticationInfoPacket {

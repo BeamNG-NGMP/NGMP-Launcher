@@ -18,3 +18,4 @@ reqwest = { version = "0.12.5", features = ["json"] } # We must use this version
 steam-auth = { git = "https://github.com/BeamNG-NGMP/steam-auth.git" }
 # steam-auth = { path = "../steam-auth" }
 open = "5.3.0"
+url = "2.5.2"

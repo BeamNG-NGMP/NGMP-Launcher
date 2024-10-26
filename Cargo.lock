@@ -768,6 +768,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "toml",
+ "url",
  "warp",
 ]
 
