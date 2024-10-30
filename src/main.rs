@@ -68,7 +68,6 @@ async fn launcher_main(
     info!("Game connected!");
 
     launcher_socket.write_packet(local_addr, ClientPacket::Version(launcher_client::handshake::VersionPacket {
-        confirm_id: 1,
         protocol_version: 1,
     })).await;
 
@@ -92,7 +91,6 @@ async fn launcher_main(
 
         // AuthenticationInfo packet
         launcher_socket.write_packet(local_addr, ClientPacket::AuthenticationInfo(launcher_client::handshake::AuthenticationInfoPacket {
-            confirm_id: 2,
             success: false,
             player_name: String::new(),
             steam_id: String::new(),
@@ -146,13 +144,12 @@ async fn launcher_main(
     trace!("Logged in: {:#?}", user_info);
 
     // Now we can cache the auth token to disk
-    if let Err(e) = std::fs::write("auth_token", user_info.auth) {
+    if let Err(e) = std::fs::write("auth_token", &user_info.auth) {
         error!("{}", e);
     }
 
     // AuthenticationInfo packet
     launcher_socket.write_packet(local_addr, ClientPacket::AuthenticationInfo(launcher_client::handshake::AuthenticationInfoPacket {
-        confirm_id: 2,
         success: true,
         player_name: user_info.user.name,
         steam_id: user_info.steam_id.to_string(),
@@ -160,6 +157,7 @@ async fn launcher_main(
     })).await;
 
     loop {
+        let auth_token = user_info.auth.clone();
         match launcher_socket.wait_for_packet().await {
             Ok((packet, _)) => match packet {
                 ClientPacket::ReloadLauncherConnection => {
@@ -167,7 +165,7 @@ async fn launcher_main(
                     break;
                 },
                 ClientPacket::JoinServer(p) => {
-                    match p.ip_addr.parse::<SocketAddr>() {
+                    match p.ip_address.parse::<SocketAddr>() {
                         Ok(server_addr) => {
                             if let Err(e) = launcher_on_server_main(
                                 launcher_socket,
@@ -175,6 +173,7 @@ async fn launcher_main(
                                 &client_info,
                                 signal_rx.clone(),
                                 server_addr,
+                                auth_token,
                             ).await {
                                 error!("Error in server conn: {}", e);
                                 // TODO: Report back to client.

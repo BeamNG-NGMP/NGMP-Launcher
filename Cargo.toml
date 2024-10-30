@@ -12,6 +12,7 @@ anyhow = "1.0"
 thiserror = "1.0"
 
 serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0" }
 toml = { version = "0.8", features = ["preserve_order"] }
 warp = "0.3.7"
 reqwest = { version = "0.12.5", features = ["json"] } # We must use this version because of steam-auth (for now)

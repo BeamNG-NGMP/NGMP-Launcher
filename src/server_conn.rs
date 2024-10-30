@@ -2,6 +2,8 @@ use std::net::SocketAddr;
 
 use thiserror::Error;
 
+use serde::{Serialize, Deserialize};
+
 use ngmp_protocol_impl::{
     connection::*,
     launcher_client,
@@ -21,13 +23,39 @@ pub enum ConnectionError {
     InvalidClientPacket(ClientPacket),
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct VehicleTransformData {
+    // m
+    pos: [f32; 3],
+    // help
+    rot: [f32; 4],
+    // m/s
+    vel: [f32; 3],
+    // rad/s
+    rvel: [f32; 3],
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct VehicleTransformWithFutureData {
+    pos: [f32; 3],
+    rot: [f32; 4],
+    vel: [f32; 3],
+    rvel: [f32; 3],
+
+    fut_pos: [f32; 3],
+    fut_rot: [f32; 4],
+    fut_vel: [f32; 3],
+    fut_rvel: [f32; 3],
+}
+
 /// Handles the "connecting to server" part of the logic
 pub async fn launcher_on_server_main(
     launcher_socket: &mut UdpListener<ClientPacket>,
     local_addr: SocketAddr,
     client_info: &launcher_client::handshake::ClientInfoPacket,
     signal_rx: SignalReceiver,
-    server_addr: SocketAddr
+    server_addr: SocketAddr,
+    auth_token: String,
 ) -> anyhow::Result<()> {
     info!("Connecting to server {}...", server_addr);
 
@@ -53,7 +81,7 @@ pub async fn launcher_on_server_main(
     // Authentication packet
     server_tcp_conn.write_packet(&ServerPacket::Authentication(server_launcher::handshake::AuthenticationPacket {
         confirm_id: 2,
-        auth_code: "not a real auth code lol".to_string(),
+        auth_code: auth_token,
     })).await?;
 
     // Confirmation
@@ -96,7 +124,7 @@ pub async fn launcher_on_server_main(
     debug!("map_name: {}", map_info.map_name);
     launcher_socket.write_packet(local_addr, ClientPacket::LoadMap(launcher_client::generic::LoadMapPacket {
         confirm_id: 1, // TODO: Generate confirm ID
-        map_name: map_info.map_name,
+        map_string: map_info.map_name,
     })).await?;
 
     // Wait for confirmation (so we know the map is loaded)
@@ -127,12 +155,13 @@ async fn launcher_on_server_inner(
     mut server_tcp_conn: TcpConnection<ServerPacket>,
     mut server_udp_conn: UdpClient<ServerPacket>,
 ) {
+    let conn_start = std::time::Instant::now();
+
     loop {
         let mut client_packet = None;
         let mut server_packet = None;
         tokio::select!(
             client_packet_maybe = launcher_socket.wait_for_packet() => {
-                trace!("client packet: {:?}", client_packet_maybe);
                 if let Err(e) = client_packet_maybe {
                     error!("{}", e);
                     break; // We have run into an error, simply disconnect for now
@@ -141,7 +170,6 @@ async fn launcher_on_server_inner(
                 client_packet = Some(packet);
             },
             tcp_server_packet_maybe = server_tcp_conn.wait_for_packet() => {
-                trace!("server tcp packet: {:?}", tcp_server_packet_maybe);
                 if let Err(e) = tcp_server_packet_maybe {
                     error!("{}", e);
                     break; // We have run into an error, simply disconnect for now
@@ -150,7 +178,6 @@ async fn launcher_on_server_inner(
                 server_packet = Some(packet);
             },
             udp_server_packet_maybe = server_udp_conn.wait_for_packet() => {
-                trace!("server udp packet: {:?}", udp_server_packet_maybe);
                 if let Err(e) = udp_server_packet_maybe {
                     error!("{}", e);
                     break; // We have run into an error, simply disconnect for now
@@ -162,14 +189,51 @@ async fn launcher_on_server_inner(
 
         if let Some(packet) = client_packet {
             if let Err(e) = match packet {
-                ClientPacket::VehicleSpawn(p) => server_tcp_conn.write_packet(&ServerPacket::VehicleSpawn(server_launcher::gameplay::VehicleSpawnPacket {
-                    confirm_id: p.confirm_id,
-                    raw_json: p.raw_json,
-                })).await,
-                ClientPacket::VehicleDelete(p) => server_tcp_conn.write_packet(&ServerPacket::VehicleDelete(server_launcher::gameplay::VehicleDeletePacket {
-                    player_id: p.player_id,
-                    vehicle_id: p.vehicle_id,
-                })).await,
+                ClientPacket::VehicleSpawn(p) => {
+                    match p.steam_id.parse::<u64>() {
+                        Ok(steam_id) => server_tcp_conn.write_packet(&ServerPacket::VehicleSpawn(server_launcher::gameplay::VehicleSpawnPacket {
+                            confirm_id: p.confirm_id,
+                            steam_id,
+                            vehicle_id: p.vehicle_id,
+                            vehicle_data: server_launcher::gameplay::VehicleData {
+                                jbeam: p.vehicle_data.jbeam,
+                                object_id: p.vehicle_data.object_id,
+                                paints: p.vehicle_data.paints,
+                                part_config: p.vehicle_data.part_config,
+                                pos: p.vehicle_data.pos,
+                                rot: p.vehicle_data.rot,
+                            },
+                        })).await,
+                        Err(e) => Err(e.into()),
+                    }
+                },
+                ClientPacket::VehicleDelete(p) => {
+                    match p.player_id.parse::<u64>() {
+                        Ok(player_id) => server_tcp_conn.write_packet(&ServerPacket::VehicleDelete(server_launcher::gameplay::VehicleDeletePacket {
+                            player_id,
+                            vehicle_id: p.vehicle_id,
+                        })).await,
+                        Err(e) => Err(e.into()),
+                    }
+                },
+                ClientPacket::VehicleTransform(p) => {
+                    match p.player_id.parse::<u64>() {
+                        Ok(player_id) => {
+                            if let Ok(mut map) = serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(&p.transform) {
+                                map.insert(String::from("ms"), serde_json::Value::Number((conn_start.elapsed().as_millis() as u64).into()));
+                                server_udp_conn.write_packet(ServerPacket::VehicleTransform(server_launcher::gameplay::VehicleTransformPacket {
+                                    player_id,
+                                    vehicle_id: p.vehicle_id,
+                                    transform: serde_json::to_string(&map).unwrap(),
+                                })).await
+                            } else {
+                                error!("Error decoding VehicleTransform transform json");
+                                Ok(())
+                            }
+                        },
+                        Err(e) => Err(e.into()),
+                    }
+                },
                 _ => {
                     warn!("Unsupported packet: {:?}", packet);
                     Ok(())
@@ -182,18 +246,44 @@ async fn launcher_on_server_inner(
 
         if let Some(packet) = server_packet {
             if let Err(e) = match packet {
-                ServerPacket::VehicleSpawn(p) => launcher_socket.write_packet(local_addr, ClientPacket::VehicleSpawn(launcher_client::gameplay::VehicleSpawnPacket {
-                    confirm_id: p.confirm_id,
-                    raw_json: p.raw_json,
-                })).await,
+                ServerPacket::VehicleSpawn(p) => {
+                    launcher_socket.write_packet(local_addr, ClientPacket::VehicleSpawn(launcher_client::gameplay::VehicleSpawnPacket {
+                        confirm_id: p.confirm_id,
+                        steam_id: p.steam_id.to_string(),
+                        vehicle_id: p.vehicle_id,
+                        vehicle_data: launcher_client::gameplay::VehicleData {
+                            jbeam: p.vehicle_data.jbeam,
+                            object_id: p.vehicle_data.object_id,
+                            paints: p.vehicle_data.paints,
+                            part_config: p.vehicle_data.part_config,
+                            pos: p.vehicle_data.pos,
+                            rot: p.vehicle_data.rot,
+                        },
+                    })).await
+                },
                 ServerPacket::VehicleConfirm(p) => launcher_socket.write_packet(local_addr, ClientPacket::VehicleConfirm(launcher_client::gameplay::VehicleConfirmPacket {
                     confirm_id: p.confirm_id,
                     vehicle_id: p.vehicle_id,
+                    object_id: p.obj_id,
                 })).await,
                 ServerPacket::VehicleDelete(p) => launcher_socket.write_packet(local_addr, ClientPacket::VehicleDelete(launcher_client::gameplay::VehicleDeletePacket {
-                    player_id: p.player_id,
+                    player_id: p.player_id.to_string(),
                     vehicle_id: p.vehicle_id,
                 })).await,
+                ServerPacket::VehicleTransform(p) => {
+                    if let Ok(parsed) = serde_json::from_str::<VehicleTransformData>(&p.transform) {
+                        let predicted = predict_future(parsed, 20.0);
+
+                        launcher_socket.write_packet(local_addr, ClientPacket::VehicleTransform(launcher_client::gameplay::VehicleTransformPacket {
+                            player_id: p.player_id.to_string(),
+                            vehicle_id: p.vehicle_id,
+                            transform: serde_json::to_string(&predicted).unwrap(),
+                        })).await
+                    } else {
+                        error!("Discarding packet, failed to deserialize transform data");
+                        Ok(())
+                    }
+                },
                 _ => {
                     warn!("Unsupported packet: {:?}", packet);
                     Ok(())
@@ -203,5 +293,25 @@ async fn launcher_on_server_inner(
                 break; // We have run into an error, simply disconnect for now
             }
         }
+    }
+}
+
+fn predict_future(now: VehicleTransformData, ms: f32) -> VehicleTransformWithFutureData {
+    let s = ms / 1000f32;
+    VehicleTransformWithFutureData {
+        pos: now.pos,
+        rot: now.rot,
+        vel: now.vel,
+        rvel: now.rvel,
+
+        fut_pos: [
+            now.pos[0] + now.vel[0] * s,
+            now.pos[1] + now.vel[1] * s,
+            now.pos[2] + now.vel[2] * s,
+        ],
+        fut_rot: now.rot,
+        // Velocity can only be predicted if we also know the drag on the vehicle!
+        fut_vel: now.vel,
+        fut_rvel: now.rvel,
     }
 }

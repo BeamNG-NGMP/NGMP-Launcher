@@ -764,6 +764,7 @@ dependencies = [
  "open",
  "reqwest",
  "serde",
+ "serde_json",
  "steam-auth",
  "thiserror",
  "tokio",
