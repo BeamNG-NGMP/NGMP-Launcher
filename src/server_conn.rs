@@ -2,13 +2,9 @@ use std::net::SocketAddr;
 
 use thiserror::Error;
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
-use ngmp_protocol_impl::{
-    connection::*,
-    launcher_client,
-    server_launcher,
-};
+use ngmp_protocol_impl::{connection::*, launcher_client, server_launcher};
 
 use ngmp_protocol_impl::launcher_client::Packet as ClientPacket;
 use ngmp_protocol_impl::server_launcher::Packet as ServerPacket;
@@ -50,8 +46,7 @@ pub struct VehicleTransformWithFutureData {
 
 /// Handles the "connecting to server" part of the logic
 pub async fn launcher_on_server_main(
-    launcher_socket: &mut UdpListener<ClientPacket>,
-    local_addr: SocketAddr,
+    launcher_socket: &mut TcpConnection<ClientPacket>,
     client_info: &launcher_client::handshake::ClientInfoPacket,
     signal_rx: SignalReceiver,
     server_addr: SocketAddr,
@@ -60,38 +55,47 @@ pub async fn launcher_on_server_main(
     info!("Connecting to server {}...", server_addr);
 
     // Create TCP connection to the server
-    let mut server_tcp_conn = TcpConnection::from_stream(tokio::net::TcpStream::connect(server_addr).await?);
+    let mut server_tcp_conn =
+        TcpConnection::from_stream(tokio::net::TcpStream::connect(server_addr).await?);
 
     // Version packet
-    server_tcp_conn.write_packet(&ServerPacket::Version(server_launcher::handshake::VersionPacket {
-        confirm_id: 1,
-        client_version: 1,
-    })).await?;
+    server_tcp_conn
+        .write_packet(&ServerPacket::Version(
+            server_launcher::handshake::VersionPacket {
+                confirm_id: 1,
+                client_version: 1,
+            },
+        ))
+        .await?;
 
     // Confirmation
     let packet = server_tcp_conn.wait_for_packet().await?;
     match packet {
-        ServerPacket::Confirmation(p) => {}, // TODO: Verify confirm id
+        ServerPacket::Confirmation(p) => {} // TODO: Verify confirm id
         _ => {
             error!("Unknown packet: {:?}", packet);
             return Err(ConnectionError::InvalidPacket(packet).into());
-        },
+        }
     }
 
     // Authentication packet
-    server_tcp_conn.write_packet(&ServerPacket::Authentication(server_launcher::handshake::AuthenticationPacket {
-        confirm_id: 2,
-        auth_code: auth_token,
-    })).await?;
+    server_tcp_conn
+        .write_packet(&ServerPacket::Authentication(
+            server_launcher::handshake::AuthenticationPacket {
+                confirm_id: 2,
+                auth_code: auth_token,
+            },
+        ))
+        .await?;
 
     // Confirmation
     let packet = server_tcp_conn.wait_for_packet().await?;
     match packet {
-        ServerPacket::Confirmation(p) => {}, // TODO: Verify confirm id
+        ServerPacket::Confirmation(p) => {} // TODO: Verify confirm id
         _ => {
             error!("Unknown packet: {:?}", packet);
             return Err(ConnectionError::InvalidPacket(packet).into());
-        },
+        }
     }
 
     // Server info packet
@@ -101,7 +105,7 @@ pub async fn launcher_on_server_main(
         _ => {
             error!("Unknown packet: {:?}", packet);
             return Err(ConnectionError::InvalidPacket(packet).into());
-        },
+        }
     };
     debug!("server_info: {:?}", server_info);
 
@@ -110,7 +114,8 @@ pub async fn launcher_on_server_main(
     let udp_socket = tokio::net::UdpSocket::bind(&udp_addr).await?;
     let mut udp_remote_addr = server_addr.clone();
     udp_remote_addr.set_port(server_info.udp_port);
-    let server_udp_conn: UdpClient<ServerPacket> = UdpClient::connect(udp_socket, udp_remote_addr).await?;
+    let server_udp_conn: UdpClient<ServerPacket> =
+        UdpClient::connect(udp_socket, udp_remote_addr).await?;
 
     // Load map packet
     let packet = server_tcp_conn.wait_for_packet().await?;
@@ -119,30 +124,38 @@ pub async fn launcher_on_server_main(
         _ => {
             error!("Unknown packet: {:?}", packet);
             return Err(ConnectionError::InvalidPacket(packet).into());
-        },
+        }
     };
     debug!("map_name: {}", map_info.map_name);
-    launcher_socket.write_packet(local_addr, ClientPacket::LoadMap(launcher_client::generic::LoadMapPacket {
-        confirm_id: 1, // TODO: Generate confirm ID
-        map_string: map_info.map_name,
-    })).await?;
+    launcher_socket
+        .write_packet(&ClientPacket::LoadMap(
+            launcher_client::generic::LoadMapPacket {
+                confirm_id: 1, // TODO: Generate confirm ID
+                map_string: map_info.map_name,
+            },
+        ))
+        .await?;
 
     // Wait for confirmation (so we know the map is loaded)
-    let (packet, _) = launcher_socket.wait_for_packet().await?;
+    let packet = launcher_socket.wait_for_packet().await?;
     match packet {
-        ClientPacket::Confirmation(p) => {}, // TODO: Check confirm id of previous packet,
+        ClientPacket::Confirmation(p) => {} // TODO: Check confirm id of previous packet,
         _ => {
             error!("Unknown packet: {:?}", packet);
             return Err(ConnectionError::InvalidClientPacket(packet).into());
-        },
+        }
     }
 
     // Confirmation
-    server_tcp_conn.write_packet(&ServerPacket::Confirmation(server_launcher::generic::ConfirmationPacket {
-        confirm_id: map_info.confirm_id,
-    })).await?;
+    server_tcp_conn
+        .write_packet(&ServerPacket::Confirmation(
+            server_launcher::generic::ConfirmationPacket {
+                confirm_id: map_info.confirm_id,
+            },
+        ))
+        .await?;
 
-    launcher_on_server_inner(launcher_socket, local_addr, server_tcp_conn, server_udp_conn).await;
+    launcher_on_server_inner(launcher_socket, server_tcp_conn, server_udp_conn).await;
 
     info!("Done playing on the server :)");
 
@@ -150,8 +163,7 @@ pub async fn launcher_on_server_main(
 }
 
 async fn launcher_on_server_inner(
-    launcher_socket: &mut UdpListener<ClientPacket>,
-    local_addr: SocketAddr,
+    launcher_socket: &mut TcpConnection<ClientPacket>,
     mut server_tcp_conn: TcpConnection<ServerPacket>,
     mut server_udp_conn: UdpClient<ServerPacket>,
 ) {
@@ -166,7 +178,7 @@ async fn launcher_on_server_inner(
                     error!("{}", e);
                     break; // We have run into an error, simply disconnect for now
                 }
-                let (packet, _) = client_packet_maybe.unwrap();
+                let packet = client_packet_maybe.unwrap();
                 client_packet = Some(packet);
             },
             tcp_server_packet_maybe = server_tcp_conn.wait_for_packet() => {
@@ -189,55 +201,90 @@ async fn launcher_on_server_inner(
 
         if let Some(packet) = client_packet {
             if let Err(e) = match packet {
-                ClientPacket::VehicleSpawn(p) => {
-                    match p.steam_id.parse::<u64>() {
-                        Ok(steam_id) => server_tcp_conn.write_packet(&ServerPacket::VehicleSpawn(server_launcher::gameplay::VehicleSpawnPacket {
-                            confirm_id: p.confirm_id,
-                            steam_id,
-                            vehicle_id: p.vehicle_id,
-                            vehicle_data: server_launcher::gameplay::VehicleData {
-                                jbeam: p.vehicle_data.jbeam,
-                                object_id: p.vehicle_data.object_id,
-                                paints: p.vehicle_data.paints,
-                                part_config: p.vehicle_data.part_config,
-                                pos: p.vehicle_data.pos,
-                                rot: p.vehicle_data.rot,
-                            },
-                        })).await,
-                        Err(e) => Err(e.into()),
+                ClientPacket::VehicleSpawn(p) => match p.steam_id.parse::<u64>() {
+                    Ok(steam_id) => {
+                        server_tcp_conn
+                            .write_packet(&ServerPacket::VehicleSpawn(
+                                server_launcher::gameplay::VehicleSpawnPacket {
+                                    confirm_id: p.confirm_id,
+                                    steam_id,
+                                    vehicle_id: p.vehicle_id,
+                                    vehicle_data: server_launcher::gameplay::VehicleData {
+                                        jbeam: p.vehicle_data.jbeam,
+                                        object_id: p.vehicle_data.object_id,
+                                        paints: p.vehicle_data.paints,
+                                        part_config: p.vehicle_data.part_config,
+                                        pos: p.vehicle_data.pos,
+                                        rot: p.vehicle_data.rot,
+                                    },
+                                },
+                            ))
+                            .await
                     }
+                    Err(e) => Err(e.into()),
                 },
-                ClientPacket::VehicleDelete(p) => {
-                    match p.player_id.parse::<u64>() {
-                        Ok(player_id) => server_tcp_conn.write_packet(&ServerPacket::VehicleDelete(server_launcher::gameplay::VehicleDeletePacket {
-                            player_id,
-                            vehicle_id: p.vehicle_id,
-                        })).await,
-                        Err(e) => Err(e.into()),
-                    }
-                },
-                ClientPacket::VehicleTransform(p) => {
-                    match p.player_id.parse::<u64>() {
-                        Ok(player_id) => {
-                            if let Ok(mut map) = serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(&p.transform) {
-                                map.insert(String::from("ms"), serde_json::Value::Number((conn_start.elapsed().as_millis() as u64).into()));
-                                server_udp_conn.write_packet(ServerPacket::VehicleTransform(server_launcher::gameplay::VehicleTransformPacket {
+                ClientPacket::VehicleDelete(p) => match p.steam_id.parse::<u64>() {
+                    Ok(player_id) => {
+                        server_tcp_conn
+                            .write_packet(&ServerPacket::VehicleDelete(
+                                server_launcher::gameplay::VehicleDeletePacket {
                                     player_id,
                                     vehicle_id: p.vehicle_id,
-                                    transform: serde_json::to_string(&map).unwrap(),
-                                })).await
-                            } else {
-                                error!("Error decoding VehicleTransform transform json");
-                                Ok(())
-                            }
-                        },
-                        Err(e) => Err(e.into()),
+                                },
+                            ))
+                            .await
                     }
+                    Err(e) => Err(e.into()),
+                },
+                ClientPacket::VehicleTransform(p) => match p.steam_id.parse::<u64>() {
+                    Ok(player_id) => {
+                        if let Ok(mut map) = serde_json::from_str::<
+                            std::collections::HashMap<String, serde_json::Value>,
+                        >(&p.transform)
+                        {
+                            map.insert(
+                                String::from("ms"),
+                                serde_json::Value::Number(
+                                    (conn_start.elapsed().as_millis() as u64).into(),
+                                ),
+                            );
+                            trace!("transform outgoing");
+                            server_udp_conn
+                                .write_packet(ServerPacket::VehicleTransform(
+                                    server_launcher::gameplay::VehicleTransformPacket {
+                                        player_id,
+                                        vehicle_id: p.vehicle_id,
+                                        transform: serde_json::to_string(&map).unwrap(),
+                                    },
+                                ))
+                                .await
+                        } else {
+                            error!("Error decoding VehicleTransform transform json");
+                            Ok(())
+                        }
+                    }
+                    Err(e) => Err(e.into()),
+                },
+                ClientPacket::VehicleUpdate(p) => match p.steam_id.parse::<u64>() {
+                    Ok(player_id) => {
+                        trace!("update outgoing");
+                        server_udp_conn
+                            .write_packet(ServerPacket::VehicleUpdate(
+                                server_launcher::gameplay::VehicleUpdatePacket {
+                                    player_id,
+                                    vehicle_id: p.vehicle_id,
+                                    ms: conn_start.elapsed().as_millis() as u32,
+                                    runtime_data: p.runtime_data,
+                                },
+                            ))
+                            .await
+                    }
+                    Err(e) => Err(e.into()),
                 },
                 _ => {
                     warn!("Unsupported packet: {:?}", packet);
                     Ok(())
-                },
+                }
             } {
                 error!("{}", e);
                 break; // We have run into an error, simply disconnect for now
@@ -246,48 +293,98 @@ async fn launcher_on_server_inner(
 
         if let Some(packet) = server_packet {
             if let Err(e) = match packet {
+                ServerPacket::PlayerData(p) => {
+                    launcher_socket
+                        .write_packet(&ClientPacket::PlayerData(
+                            launcher_client::gameplay::PlayerDataPacket {
+                                players: p
+                                    .players
+                                    .into_iter()
+                                    .map(|p| launcher_client::gameplay::PlayerData {
+                                        name: p.name,
+                                        steam_id: p.steam_id.to_string(),
+                                        avatar_hash: p.avatar_hash,
+                                    })
+                                    .collect(),
+                            },
+                        ))
+                        .await
+                }
                 ServerPacket::VehicleSpawn(p) => {
-                    launcher_socket.write_packet(local_addr, ClientPacket::VehicleSpawn(launcher_client::gameplay::VehicleSpawnPacket {
-                        confirm_id: p.confirm_id,
-                        steam_id: p.steam_id.to_string(),
-                        vehicle_id: p.vehicle_id,
-                        vehicle_data: launcher_client::gameplay::VehicleData {
-                            jbeam: p.vehicle_data.jbeam,
-                            object_id: p.vehicle_data.object_id,
-                            paints: p.vehicle_data.paints,
-                            part_config: p.vehicle_data.part_config,
-                            pos: p.vehicle_data.pos,
-                            rot: p.vehicle_data.rot,
-                        },
-                    })).await
-                },
-                ServerPacket::VehicleConfirm(p) => launcher_socket.write_packet(local_addr, ClientPacket::VehicleConfirm(launcher_client::gameplay::VehicleConfirmPacket {
-                    confirm_id: p.confirm_id,
-                    vehicle_id: p.vehicle_id,
-                    object_id: p.obj_id,
-                })).await,
-                ServerPacket::VehicleDelete(p) => launcher_socket.write_packet(local_addr, ClientPacket::VehicleDelete(launcher_client::gameplay::VehicleDeletePacket {
-                    player_id: p.player_id.to_string(),
-                    vehicle_id: p.vehicle_id,
-                })).await,
+                    launcher_socket
+                        .write_packet(&ClientPacket::VehicleSpawn(
+                            launcher_client::gameplay::VehicleSpawnPacket {
+                                confirm_id: p.confirm_id,
+                                steam_id: p.steam_id.to_string(),
+                                vehicle_id: p.vehicle_id,
+                                vehicle_data: launcher_client::gameplay::VehicleData {
+                                    jbeam: p.vehicle_data.jbeam,
+                                    object_id: p.vehicle_data.object_id,
+                                    paints: p.vehicle_data.paints,
+                                    part_config: p.vehicle_data.part_config,
+                                    pos: p.vehicle_data.pos,
+                                    rot: p.vehicle_data.rot,
+                                },
+                            },
+                        ))
+                        .await
+                }
+                ServerPacket::VehicleConfirm(p) => {
+                    launcher_socket
+                        .write_packet(&ClientPacket::VehicleConfirm(
+                            launcher_client::gameplay::VehicleConfirmPacket {
+                                confirm_id: p.confirm_id,
+                                vehicle_id: p.vehicle_id,
+                                object_id: p.obj_id,
+                            },
+                        ))
+                        .await
+                }
+                ServerPacket::VehicleDelete(p) => {
+                    launcher_socket
+                        .write_packet(&ClientPacket::VehicleDelete(
+                            launcher_client::gameplay::VehicleDeletePacket {
+                                steam_id: p.player_id.to_string(),
+                                vehicle_id: p.vehicle_id,
+                            },
+                        ))
+                        .await
+                }
                 ServerPacket::VehicleTransform(p) => {
+                    trace!("transform incoming");
                     if let Ok(parsed) = serde_json::from_str::<VehicleTransformData>(&p.transform) {
                         let predicted = predict_future(parsed, 20.0);
 
-                        launcher_socket.write_packet(local_addr, ClientPacket::VehicleTransform(launcher_client::gameplay::VehicleTransformPacket {
-                            player_id: p.player_id.to_string(),
-                            vehicle_id: p.vehicle_id,
-                            transform: serde_json::to_string(&predicted).unwrap(),
-                        })).await
+                        launcher_socket
+                            .write_packet(&ClientPacket::VehicleTransform(
+                                launcher_client::gameplay::VehicleTransformPacket {
+                                    steam_id: p.player_id.to_string(),
+                                    vehicle_id: p.vehicle_id,
+                                    transform: serde_json::to_string(&predicted).unwrap(),
+                                },
+                            ))
+                            .await
                     } else {
                         error!("Discarding packet, failed to deserialize transform data");
                         Ok(())
                     }
-                },
+                }
+                ServerPacket::VehicleUpdate(p) => {
+                    trace!("update incoming");
+                    launcher_socket
+                        .write_packet(&ClientPacket::VehicleUpdate(
+                            launcher_client::gameplay::VehicleUpdatePacket {
+                                steam_id: p.player_id.to_string(),
+                                vehicle_id: p.vehicle_id,
+                                runtime_data: p.runtime_data,
+                            },
+                        ))
+                        .await
+                }
                 _ => {
                     warn!("Unsupported packet: {:?}", packet);
                     Ok(())
-                },
+                }
             } {
                 error!("{}", e);
                 break; // We have run into an error, simply disconnect for now
