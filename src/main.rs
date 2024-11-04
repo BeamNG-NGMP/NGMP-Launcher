@@ -246,7 +246,16 @@ async fn launcher_main(
                         }
                         Err(e) => {
                             error!("{}", e);
-                            todo!(); // Respond to client with error packet
+                            if let Err(e) = launcher_socket
+                                .write_packet(&ClientPacket::ConnectionError(
+                                    launcher_client::generic::ConnectionErrorPacket {
+                                        error: format!("{}", e),
+                                    },
+                                ))
+                                .await
+                            {
+                                error!("{}", e);
+                            }
                         }
                     }
                 }
