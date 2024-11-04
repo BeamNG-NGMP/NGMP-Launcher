@@ -238,7 +238,16 @@ async fn launcher_main(
                             .await
                             {
                                 error!("Error in server conn: {}", e);
-                                // TODO: Report back to client.
+                                if let Err(e) = launcher_socket
+                                    .write_packet(&ClientPacket::ConnectionError(
+                                        launcher_client::generic::ConnectionErrorPacket {
+                                            error: format!("{}", e),
+                                        },
+                                    ))
+                                    .await
+                                {
+                                    error!("{}", e);
+                                }
                             }
                             // When this returns, we are done playing on the server, so we can
                             // just break and reconnect to the game.
